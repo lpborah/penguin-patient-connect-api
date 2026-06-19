@@ -9,6 +9,7 @@ use App\ApiResponse;
 use App\Validator;
 
 use App\Controllers\CustomerController;
+use App\Controllers\PatientController;
 use App\Controllers\UserController;
 use App\Controllers\AuthController;
 use App\Middleware\AuthMiddleware;
@@ -29,7 +30,14 @@ return function (App $app): void {
         );
     });
 
-    
+    $app->get('/health', function (Request $request, Response $response) {
+        return ApiResponse::success(
+            $response,
+            null,
+            'PPC API is up and running'
+        );
+    });
+
 
     // Customer Routes
     $customerController = new CustomerController();
@@ -39,8 +47,14 @@ return function (App $app): void {
     $app->post('/deleteCustomer', [$customerController, 'deleteCustomer']);
     $app->post('/importCustomers', [$customerController, 'importCustomers']);
     $app->get('/getCustomerById', [$customerController, 'getCustomerById']);
-    $app->post('/convertLeadToCustomer', [$customerController, 'convertLeadToCustomer']);
     $app->get('/getCustomersWithAMCSubscriptions', [$customerController, 'getCustomersWithAMCSubscriptions']);
+    
+    // Patient Routes
+    $patientController = new PatientController();
+    $app->post('/savePatient', [$patientController, 'savePatient']);
+    $app->post('/sendConsentMessage', [$patientController, 'sendConsentMessage']);
+    $app->get('/consentAgree', [$patientController, 'consentAgree']);
+    $app->post('/bulkImport', [$patientController, 'bulkImport']);
     
     // User Routes
     $userController = new UserController();
