@@ -1,0 +1,24 @@
+{
+  "name": "example/slim4-mysql-cors",
+  "description": "Slim 4 API with MySQL CRUD and CORS middleware (example)",
+  "type": "project",
+  "require": {
+    "php": ">=7.2",
+    "slim/slim": "~4.5.0",
+    "slim/psr7": "~1.3.0",
+    "vlucas/phpdotenv": "~5.3.0",
+    "phpmailer/phpmailer": "~6.5.0",
+    "psr/container": "1.0.0",
+    "psr/http-message": "^1.0",
+    "psr/log": "^1.1",
+    "monolog/monolog": "^2.10"
+  },
+  "autoload": {
+    "psr-4": {
+      "App\\": "src/"
+    }
+  },
+  "config": {
+    "platform-check": false
+  }
+}
