@@ -10,7 +10,8 @@ use App\ApiResponse;
 use App\Validator;
 use App\AppLogger;
 
-class ContactController
+// class ContactController
+class PatientConsentsController
 {
     /* ==============================
        Get All Contacts

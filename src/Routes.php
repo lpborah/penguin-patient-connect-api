@@ -53,7 +53,9 @@ return function (App $app): void {
     $patientController = new PatientController();
     $app->post('/savePatient', [$patientController, 'savePatient']);
     $app->post('/sendConsentMessage', [$patientController, 'sendConsentMessage']);
-    $app->get('/consentAgree', [$patientController, 'consentAgree']);
+    //$app->get('/consentAgree', [$patientController, 'consentAgree']);
+    // Friendly/RESTful alias for consent link handling
+    $app->get('/consent/agree', [$patientController, 'consentAgree']);
     $app->post('/bulkImport', [$patientController, 'bulkImport']);
     
     // User Routes

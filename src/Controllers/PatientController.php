@@ -16,6 +16,47 @@ class PatientController
     private const CONSENT_TOKEN_VALIDITY_DAYS = 7;
 
     /**
+     * Normalize phone number into E.164-like format used by AiSensy.
+     * - If input starts with '+', keep country code and digits.
+     * - If input is 10 digits (assumed India), prefix +91.
+     * - Strip non-digits and leading zeros where appropriate.
+     * Returns null when input is empty or can't be normalized.
+     */
+    private function normalizePhone(?string $raw): ?string
+    {
+        if (empty($raw)) {
+            return null;
+        }
+        $raw = trim($raw);
+        // Keep only digits
+        $digits = preg_replace('/\D+/', '', $raw);
+        if ($digits === '') {
+            return null;
+        }
+
+        // If original had + prefix, preserve it
+        if (strpos($raw, '+') === 0) {
+            return '+' . $digits;
+        }
+
+        // Remove any leading zeros
+        $digits = ltrim($digits, '0');
+
+        // If 10 digits -> assume India local number
+        if (strlen($digits) === 10) {
+            return '+91' . $digits;
+        }
+
+        // If already starts with country code 91 (12 digits), prefix +
+        if (strlen($digits) >= 11 && substr($digits, 0, 2) === '91') {
+            return '+' . $digits;
+        }
+
+        // Fallback: prefix + to digits
+        return '+' . $digits;
+    }
+
+    /**
      * Save patient details, create associated contact and consent token,
      * and trigger a WhatsApp consent message via the AiSensy campaign API.
      *
@@ -65,24 +106,75 @@ class PatientController
 
         try {
             $pdo = Database::getConnection();
+
+            // Pre-insert duplicate checks
+            $mobileRaw = trim((string) ($sanitized['mobile'] ?? ''));
+            $mobileNorm = $this->normalizePhone($mobileRaw);
+            $mobileNormNoPlus = $mobileNorm ? ltrim($mobileNorm, '+') : null;
+            $externalPatientId = trim((string) ($sanitized['external_patient_id'] ?? ''));
+
+            // Check duplicate by mobile (raw + normalized variants)
+            $stmtMobile = $pdo->prepare(
+                'SELECT id FROM patient_master WHERE customer_id = ? AND (mobile = ? OR mobile = ? OR mobile = ?) LIMIT 1'
+            );
+            $stmtMobile->execute([$customerId, $mobileRaw, $mobileNorm, $mobileNormNoPlus]);
+            if ($stmtMobile->fetch()) {
+                AppLogger::warning($user, 'Duplicate mobile when saving patient', [
+                    'customer_id' => $customerId,
+                    'mobile' => $mobileRaw,
+                ]);
+                return ApiResponse::error($response, 'mobile number already exist', [], 200);
+            }
+
+            // Check duplicate by external_patient_id (only when provided)
+            if ($externalPatientId !== '') {
+                $stmtExt = $pdo->prepare(
+                    'SELECT id FROM patient_master WHERE customer_id = ? AND external_patient_id = ? LIMIT 1'
+                );
+                $stmtExt->execute([$customerId, $externalPatientId]);
+                if ($stmtExt->fetch()) {
+                    AppLogger::warning($user, 'Duplicate external patient ID when saving patient', [
+                        'customer_id' => $customerId,
+                        'external_patient_id' => $externalPatientId,
+                    ]);
+                    return ApiResponse::error($response, 'Patient already registered', [], 200);
+                }
+            }
+
             $pdo->beginTransaction();
 
-            // 1. Insert / Save patient details in patients table
-            $stmt = $pdo->prepare('INSERT INTO patients (customer_id, patient_name, mobile, consent_status, consent_source) VALUES (?, ?, ?, ?, ?)');
+            // 1. Insert / Save patient details in patient_master table
+            $stmt = $pdo->prepare('
+                INSERT INTO patient_master (
+                    customer_id,
+                    external_patient_id,
+                    patient_name,
+                    first_name,
+                    last_name,
+                    age,
+                    sex,
+                    mobile
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ');
+
             $stmt->execute([
                 $customerId,
+                $sanitized['external_patient_id'] ?? null,
                 $sanitized['patient_name'],
-                $sanitized['mobile'],
-                $sanitized['consent_status'] ?? 'pending',
-                $sanitized['consent_source'] ?? null,
+                $sanitized['first_name'] ?? null,
+                $sanitized['last_name'] ?? null,
+                $sanitized['age'] ?? null,
+                $sanitized['sex'] ?? null,
+                $sanitized['mobile']
             ]);
+
             $patientId = (int) $pdo->lastInsertId();
 
             AppLogger::info($user, 'Patient created successfully', [
                 'patient_id' => $patientId,
                 'patient_name' => $sanitized['patient_name']
             ]);
-
+            // exit();
             // 2. Insert / Save in contact table
             $stmt = $pdo->prepare('INSERT INTO contact (customer_id, external_patient_id, mobile_no, first_name, last_name, source_type, source_reference, consent_status, consent_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
             $stmt->execute([
@@ -132,20 +224,31 @@ class PatientController
                 $aisensyEndpoint = 'https://backend.aisensy.com/campaign/t1/api/v2';
 
                 // Ensure destination starts with + and strip non-digits
-                $destination = $sanitized['mobile'] ?? '';
-                $destination = preg_replace('/\D+/', '', $destination);
-                if ($destination !== '' && strpos($destination, '+') !== 0) {
-                    $destination = '+' . $destination;
+                // Normalize destination phone number
+                $destination = $this->normalizePhone($sanitized['mobile'] ?? null);
+                if ($destination === null) {
+                    AppLogger::warning($user, 'Invalid mobile provided for AiSensy', ['mobile' => $sanitized['mobile'] ?? null]);
+                    $destination = '';
                 }
 
-                $buttonUrl = 'https://ppc.penguinhealth.com/consentAgree?t=' . $rawToken;
+                $buttonUrl = 'https://ppc.penguinhealth.com/consent/accept?t=' . $rawToken;
+                // $buttonUrl = 'https://ppc.penguinhealthtech.com/#/login?t=' . $rawToken;
+
+                // Prepare template params ensuring they are strings and fallbacks are provided
+                $firstName = trim((string) ($sanitized['first_name'] ?? $sanitized['patient_name'] ?? ''));
+                $lastName = trim((string) ($sanitized['last_name'] ?? ''));
+                if ($firstName === '') {
+                    $firstName = 'User';
+                }
 
                 $aisensyPayload = [
                     'campaignName' => 'HM Consent V1',
                     'destination' => $destination,
-                    'userName' => $sanitized['patient_name'] ?? 'User',
-                    'templateParams' => [$sanitized['patient_name'] ?? 'User'],
+                    'userName' => $firstName,
+                    // AiSensy expects array of template params; provide first and last name (last may be empty string)
+                    'templateParams' => [$firstName, $lastName],
                     'buttonUrlParam' => $buttonUrl,
+                    'apiKey' => $_ENV['AISENSY_API_KEY'] ?? null
                 ];
 
                 $ch = curl_init($aisensyEndpoint);
@@ -154,6 +257,13 @@ class PatientController
                 curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
                 curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($aisensyPayload));
                 curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+
+                // Set the API key if provided in the request
+                curl_setopt($ch, CURLOPT_HTTPHEADER, [
+                    'Content-Type: application/json',
+                    'Authorization: Bearer ' . $_ENV['AISENSY_API_KEY']
+                ]);
+
                 $aisensyResult = curl_exec($ch);
                 $aisensyErr = curl_error($ch);
                 curl_close($ch);
@@ -195,10 +305,10 @@ class PatientController
         $queryParams = $request->getQueryParams();
         $user = $queryParams['user'] ?? 'NA';
 
-        AppLogger::info($user, 'Consent agree requested', ['token' => isset($queryParams['token']) ? 'provided' : null]);
+        AppLogger::info($user, 'Consent agree requested', ['token' => isset($queryParams['t']) ? 'provided' : null]);
 
-        if (empty($queryParams['token'])) {
-            AppLogger::warning($user, 'Consent agree validation failed', ['missing' => ['token']]);
+        if (empty($queryParams['t'])) {
+            AppLogger::warning($user, 'Consent agree validation failed', ['missing' => ['t']]);
             return ApiResponse::error(
                 $response,
                 'Missing required parameter: token',
@@ -207,7 +317,7 @@ class PatientController
             );
         }
 
-        $tokenHash = hash('sha256', $queryParams['token']);
+        $tokenHash = hash('sha256', $queryParams['t']);
 
         try {
             $pdo = Database::getConnection();
@@ -248,7 +358,7 @@ class PatientController
 
             $affectedPatients = 0;
             if ($contact) {
-                $stmt = $pdo->prepare('UPDATE patients SET consent_status = ?, consent_response_at = NOW() WHERE customer_id = ? AND mobile = ?');
+                $stmt = $pdo->prepare('UPDATE patient_master SET consent_status = ?, consent_response_at = NOW() WHERE customer_id = ? AND mobile = ?');
                 $stmt->execute(['subscribed', $tokenRow['customer_id'], $contact['mobile_no']]);
                 $affectedPatients = $stmt->rowCount();
             }
@@ -306,7 +416,7 @@ class PatientController
         try {
             $pdo = Database::getConnection();
 
-            $stmt = $pdo->prepare('SELECT * FROM patients WHERE id = ?');
+            $stmt = $pdo->prepare('SELECT * FROM patient_master WHERE id = ?');
             $stmt->execute([$patientId]);
             $patient = $stmt->fetch();
 
@@ -345,10 +455,12 @@ class PatientController
                 return ApiResponse::error($response, 'WhatsApp messaging is not configured for this customer', null, 400);
             }
 
+            $destination = $this->normalizePhone($patient['mobile'] ?? null) ?? $patient['mobile'];
+
             $payload = [
                 'apiKey' => $apiKey,
                 'campaignName' => $customer['aisensy_campaign_name'],
-                'destination' => $patient['mobile'],
+                'destination' => $destination,
                 'templateParams' => [$patient['patient_name']],
             ];
 
@@ -376,7 +488,7 @@ class PatientController
 
             $pdo->beginTransaction();
 
-            $stmt = $pdo->prepare('UPDATE patients SET consent_status = ?, consent_sent_at = NOW(), last_message_id = ?, last_error = NULL WHERE id = ?');
+            $stmt = $pdo->prepare('UPDATE patient_master SET consent_status = ?, consent_sent_at = NOW(), last_message_id = ?, last_error = NULL WHERE id = ?');
             $stmt->execute(['sent', $messageId, $patientId]);
 
             $stmt = $pdo->prepare('UPDATE contact SET consent_status = ?, consent_granted_at = NOW() WHERE contact_id = ?');
@@ -413,7 +525,6 @@ class PatientController
         AppLogger::info($user, 'Patient CSV import initiated');
 
         $uploadedFiles = $request->getUploadedFiles();
-
         if (!isset($uploadedFiles['file'])) {
             AppLogger::warning($user, 'CSV import failed: no file uploaded');
             return ApiResponse::error($response, 'CSV file is required', null, 400);
@@ -473,7 +584,7 @@ class PatientController
             $pdo = Database::getConnection();
 
             $patientStmt = $pdo->prepare('INSERT INTO patients (customer_id, patient_name, mobile, consent_status) VALUES (?, ?, ?, ?)');
-            $contactStmt = $pdo->prepare('INSERT INTO contact (customer_id, external_patient_id, mobile_no, first_name, source_type, source_reference, consent_status) VALUES (?, ?, ?, ?, ?, ?, ?)');
+            $contactStmt = $pdo->prepare('INSERT INTO contact (customer_id, external_patient_id, mobile_no, first_name, source_type, source_reference, cpatient_master atus) VALUES (?, ?, ?, ?, ?, ?, ?)');
             $tokenStmt = $pdo->prepare('INSERT INTO consent_tokens (customer_id, contact_id, token_hash, token_last4, purpose, status, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)');
 
             $inserted = 0;

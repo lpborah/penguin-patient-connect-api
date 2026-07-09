@@ -14,7 +14,7 @@ if (file_exists(__DIR__ . '/../.env')) {
 $app = AppFactory::create();
 
 // Set base path for subdirectory deployment from environment variable
-$basePath = $_ENV['BASE_PATH'] ?? '';
+$basePath = $_ENV['BASE_PATH'] ?? '/penguin-patient-connect-api';
 if (!empty($basePath)) {
     $app->setBasePath($basePath);
 }
