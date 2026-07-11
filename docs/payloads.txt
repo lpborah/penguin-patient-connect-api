@@ -1,0 +1,408 @@
+PPC API - Endpoint Payload & Response Reference
+==============================================
+
+Response Envelope (common for all APIs)
+---------------------------------------
+Success:
+{
+  "data": {},
+  "message": "...",
+  "status": "success"
+}
+
+Error:
+{
+  "data": null,
+  "message": "...",
+  "status": "error"
+}
+
+=================================================================
+HEALTH ENDPOINTS
+=================================================================
+
+GET /
+Query: none
+Response data: null
+
+GET /health
+Query: none
+Response data: null
+
+=================================================================
+CUSTOMER ENDPOINTS
+=================================================================
+
+GET /getCustomers
+Query (optional):
+{
+  "user": "admin"
+}
+Response data: array of customer rows
+
+GET /getCustomersWithAMCSubscriptions
+Query (optional):
+{
+  "user": "admin"
+}
+Response data: array of customer + subscription rows (amc_required = 1)
+
+POST /saveCustomer
+Payload (full):
+{
+  "customer_name": "ABC Hospital",
+  "customer_code": "ABC001",
+  "aisensy_campaign_name": "HM Consent V1",
+  "aisensy_template_name": "hm_consent_template",
+  "contact_person": "Rohit Sharma",
+  "mobile_no": "9876543210",
+  "email": "ops@abchospital.com",
+  "address": "MG Road",
+  "city": "Bengaluru",
+  "state": "Karnataka",
+  "country": "India",
+  "pin": "560001",
+  "gst_no": "29ABCDE1234F1Z5",
+  "status": "ACTIVE",
+  "user": "admin"
+}
+Success data:
+{
+  "customer_id": 123
+}
+
+POST /updateCustomer
+Payload (full):
+{
+  "customer_id": 123,
+  "customer_name": "ABC Hospital",
+  "customer_code": "ABC001",
+  "aisensy_campaign_name": "HM Consent V1",
+  "aisensy_template_name": "hm_consent_template",
+  "contact_person": "Rohit Sharma",
+  "mobile_no": "9876543210",
+  "email": "ops@abchospital.com",
+  "address": "MG Road",
+  "city": "Bengaluru",
+  "state": "Karnataka",
+  "country": "India",
+  "pin": "560001",
+  "gst_no": "29ABCDE1234F1Z5",
+  "status": "ACTIVE",
+  "user": "admin"
+}
+Success data:
+{
+  "affected": 1
+}
+
+POST /deleteCustomer
+Payload:
+{
+  "customer_id": 123,
+  "user": "admin"
+}
+Success data:
+{
+  "affected": 1
+}
+
+POST /importCustomers (multipart/form-data)
+Payload/form fields:
+{
+  "file": "customers.csv"
+}
+CSV required columns:
+customer_name, customer_code, aisensy_campaign_name, aisensy_template_name,
+contact_person, mobile_no, email, address, city, pin, state, country, gst_no, status
+Success data:
+{
+  "inserted": 25
+}
+
+GET /getCustomerById
+Query:
+{
+  "customer_id": 123,
+  "user": "admin"
+}
+Response data: single customer row
+
+=================================================================
+PATIENT ENDPOINTS
+=================================================================
+
+POST /savePatient
+Payload (full):
+{
+  "customer_id": 123,
+  "patient_name": "John Doe",
+  "external_patient_id": "EXT-P-1001",
+  "first_name": "John",
+  "last_name": "Doe",
+  "age": "35",
+  "sex": "M",
+  "mobile": "9876543210",
+  "consent_source": "OPD",
+  "purpose": "WHATSAPP_CONSENT",
+
+  "visit_date": "2026-07-11",
+  "external_visit_id": "EXT-V-5001",
+  "source_type": "HIS",
+  "source_reference": "HIS-REF-09",
+  "department": "Cardiology",
+  "doctor_name": "Dr. Sharma",
+  "laboratory_id": "LAB-01",
+  "bill_number": "B-1001",
+  "bill_amount": 1500.00,
+  "admission_number": "ADM-001",
+  "ward": "ICU",
+  "bed": "B12",
+
+  "user": "admin"
+}
+Success data (new patient):
+{
+  "patient_id": 42,
+  "consent_id": 18,
+  "consent_token_id": 97,
+  "consent_token": "<raw_token>",
+  "expires_at": "2026-07-18 10:00:00",
+  "visit_id": 300,
+  "aisensy_response": {
+    "submitted_message_id": "msg_123",
+    "...": "..."
+  }
+}
+Success data (existing patient + pending consent):
+{
+  "patient_id": 42,
+  "consent_id": 18,
+  "consent_token_id": 98,
+  "consent_token": "<raw_token>",
+  "expires_at": "2026-07-18 11:00:00",
+  "visit_id": 301,
+  "aisensy_response": {
+    "submitted_message_id": "msg_124",
+    "...": "..."
+  }
+}
+Common duplicate/no-pending response:
+{
+  "data": [],
+  "message": "mobile number already exist",
+  "status": "error"
+}
+
+POST /sendConsentMessage
+Payload:
+{
+  "patient_id": 42,
+  "user": "admin"
+}
+Success data:
+{
+  "patient_id": 42,
+  "message_id": "msg_123"
+}
+--------------------------------------------
+POST /sendWhatsappMessage
+Payload (full):
+{
+  "campaign_name": "HM Consent V1",
+  "mobile": "9876543210",
+  "first_name": "John",
+  "last_name": "Doe",
+  "button_url": "https://ppc.penguinhealth.com/consent/accept?t=sample-token",
+  "user": "lakshmi"
+}
+Success data:
+{
+  "campaign_name": "HM Consent V1",
+  "destination": "+919876543210",
+  "request_payload": {
+    "campaignName": "HM Consent V1",
+    "destination": "+919876543210",
+    "userName": "John",
+    "templateParams": ["John", "Doe"],
+    "buttonUrlParam": "https://ppc.penguinhealth.com/consent/accept?t=sample-token",
+    "apiKey": "***"
+  },
+  "aisensy_response": {
+    "submitted_message_id": "msg_125",
+    "...": "..."
+  }
+}
+----------------------------------------------
+GET /consent/agree
+Query:
+{
+  "t": "<raw_token>",
+  "user": "lakshmi"
+}
+Success data:
+{
+  "consent_id": 18,
+  "patients_updated": 1
+}
+------------------------------------------------
+POST /bulkImport (multipart/form-data)
+Payload/form fields:
+{
+  "file": "patients.csv"
+}
+CSV required columns:
+customer_id, patient_name, mobile, source_type, source_reference
+Success data:
+{
+  "inserted": 120
+}
+----------------------------------------------
+POST /saveVisit
+Payload (full):
+{
+  "customer_id": 123,
+  "patient_id": 42,
+  "visit_date": "2026-07-11",
+  "external_visit_id": "V-20260711-001",
+  "source_type": "HIS",
+  "source_reference": "REF-001",
+  "department": "Cardiology",
+  "doctor_name": "Dr. Sharma",
+  "laboratory_id": "LAB-01",
+  "bill_number": "B-1001",
+  "bill_amount": 1500.00,
+  "admission_number": "ADM-001",
+  "ward": "ICU",
+  "bed": "B12",
+  "user": "admin"
+}
+Success data:
+{
+  "visit_id": 300,
+  "patient_id": 42,
+  "customer_id": 123
+}
+
+=================================================================
+USER ENDPOINTS
+=================================================================
+
+GET /getUsers
+Query (optional):
+{
+  "user": "admin"
+}
+Response data: array of users (without password)
+
+POST /saveUser
+Payload (full):
+{
+  "user_name": "jdoe",
+  "email": "jdoe@example.com",
+  "phone_number": "9876543210",
+  "password": "Strong@123",
+  "role_id": 2,
+  "user": "admin"
+}
+Success data:
+{
+  "user_id": 501
+}
+
+POST /updateUser
+Payload (full):
+{
+  "user_id": 501,
+  "user_name": "jdoe",
+  "email": "jdoe@example.com",
+  "phone_number": "9876543210",
+  "status": "active",
+  "role_id": 2,
+  "user": "admin"
+}
+Success data:
+{
+  "affected": 1
+}
+
+POST /deleteUser
+Payload:
+{
+  "user_id": 501,
+  "user": "admin"
+}
+Success data:
+{
+  "affected": 1
+}
+
+POST /restoreDeletedUser
+Payload:
+{
+  "user_id": 501,
+  "user": "admin"
+}
+Success data:
+{
+  "affected": 1
+}
+
+GET /getRoles
+Query (optional):
+{
+  "user": "admin"
+}
+Response data: array of roles
+
+=================================================================
+AUTH ENDPOINTS
+=================================================================
+
+POST /login
+Payload:
+{
+  "username": "jdoe@example.com",
+  "password": "Strong@123"
+}
+Success data:
+{
+  "user": {
+    "user_id": 501,
+    "user_name": "jdoe",
+    "email": "jdoe@example.com",
+    "phone_number": "9876543210",
+    "role_id": 2,
+    "status": "active"
+  },
+  "token": "<jwt_token>",
+  "expires_in": 3600
+}
+
+POST /updatePassword
+Payload:
+{
+  "username": "jdoe@example.com",
+  "old_password": "OldPass@123",
+  "new_password": "NewPass@123",
+  "user": "jdoe@example.com"
+}
+Success data:
+[]
+
+POST /logout
+Payload:
+{
+  "username": "jdoe@example.com",
+  "user": "jdoe@example.com"
+}
+Success data:
+[]
+
+=================================================================
+NOTES
+=================================================================
+1) Base URL depends on deployment (example: http://localhost/api)
+2) All responses follow the same envelope: data, message, status
+3) Some legacy endpoints return HTTP 200 even for validation/auth errors by design
+

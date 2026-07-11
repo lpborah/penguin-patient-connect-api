@@ -57,6 +57,180 @@ class PatientController
     }
 
     /**
+     * Insert a record into patient_messages after every outbound provider (AiSensy) API call.
+     * Derives status/error from the provider response array.
+     * Failures here are caught and logged without affecting the main flow.
+     */
+    private function insertPatientMessage(
+        \PDO    $pdo,
+        int     $customerId,
+        int     $patientId,
+        ?int    $consentId,
+        string  $messageType,
+        string  $templateName,
+        string  $mobileNo,
+        string  $provider,
+        array   $requestPayload,
+        ?array  $providerResponse,
+        ?int    $visitId = null
+    ): void {
+        try {
+            // Derive status and error from provider response
+            $status            = 'SENT';
+            $errorMessage      = null;
+            $providerMessageId = null;
+
+            if (is_array($providerResponse)) {
+                if (isset($providerResponse['error']) || isset($providerResponse['exception'])) {
+                    $status       = 'FAILED';
+                    $errorMessage = $providerResponse['error'] ?? $providerResponse['exception'] ?? null;
+                } else {
+                    $providerMessageId = $providerResponse['submitted_message_id']
+                        ?? $providerResponse['messageId']
+                        ?? $providerResponse['id']
+                        ?? null;
+                }
+            }
+
+            $stmt = $pdo->prepare(
+                'INSERT INTO patient_messages
+                    (customer_id, patient_id, visit_id, consent_id, message_type, template_name,
+                     mobile_no, provider, provider_message_id, status, error_message,
+                     request_payload, provider_response)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+            );
+            $stmt->execute([
+                $customerId,
+                $patientId,
+                $visitId,
+                $consentId,
+                $messageType,
+                $templateName,
+                $mobileNo,
+                $provider,
+                $providerMessageId,
+                $status,
+                $errorMessage,
+                json_encode($requestPayload),
+                $providerResponse !== null ? json_encode($providerResponse) : null,
+            ]);
+        } catch (\Exception $e) {
+            AppLogger::error('system', 'Failed to insert patient message log', ['error' => $e->getMessage()]);
+        }
+    }
+
+    /**
+     * Call the AiSensy Campaign API to send a WhatsApp message.
+     * Returns the decoded response array, or an error/exception array on failure.
+     *
+     * @param string $destination  Normalized E.164 phone number
+     * @param string $firstName    Patient first name (used as userName and first templateParam)
+     * @param string $lastName     Patient last name (second templateParam, may be empty)
+     * @param string $buttonUrl    Full consent URL to embed in the message button
+     * @return array               Decoded provider response
+     */
+    private function callAiSensyApi(
+        string $campaignName,
+        string $destination,
+        string $firstName,
+        string $lastName,
+        string $buttonUrl
+    ): array {
+        $endpoint = 'https://backend.aisensy.com/campaign/t1/api/v2';
+        $apiKey   = $_ENV['AISENSY_API_KEY'] ?? '';
+
+        $payload = [
+            'campaignName'   => $campaignName,
+            'destination'    => $destination,
+            'userName'       => $firstName,
+            'templateParams' => [$firstName, $lastName],
+            'buttonUrlParam' => $buttonUrl,
+            'apiKey'         => $apiKey,
+        ];
+
+        try {
+            $ch = curl_init($endpoint);
+            curl_setopt($ch, CURLOPT_POST, true);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+            curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
+            curl_setopt($ch, CURLOPT_HTTPHEADER, [
+                'Content-Type: application/json',
+                'Authorization: Bearer ' . $apiKey,
+            ]);
+
+            $result   = curl_exec($ch);
+            $curlErr  = curl_error($ch);
+            curl_close($ch);
+
+            if ($result === false) {
+                AppLogger::error('system', 'AiSensy cURL error', ['error' => $curlErr, 'destination' => $destination]);
+                return ['_payload' => $payload, 'error' => $curlErr];
+            }
+
+            $decoded = json_decode($result, true) ?? [];
+            $decoded['_payload'] = $payload;   // carry payload for message logging
+            AppLogger::info('system', 'AiSensy API response', ['response' => $decoded]);
+            return $decoded;
+
+        } catch (\Exception $ex) {
+            AppLogger::error('system', 'AiSensy exception', ['error' => $ex->getMessage()]);
+            return ['_payload' => $payload, 'exception' => $ex->getMessage()];
+        }
+    }
+
+    /**
+     * Insert a patient_visits row and return the new visit_id.
+     * visit_date defaults to today when not supplied.
+     * Returns null and logs on failure (non-fatal).
+     */
+    private function insertVisitRecord(
+        \PDO  $pdo,
+        int   $customerId,
+        int   $patientId,
+        array $data
+    ): ?int {
+        try {
+            $externalVisitId = trim((string) ($data['external_visit_id'] ?? ''));
+            $billAmount      = isset($data['bill_amount']) && $data['bill_amount'] !== ''
+                ? (float) $data['bill_amount']
+                : null;
+            $visitDate = !empty($data['visit_date'])
+                ? $data['visit_date']
+                : (new \DateTime())->format('Y-m-d');
+
+            $stmt = $pdo->prepare('
+                INSERT INTO patient_visits (
+                    customer_id, patient_id, external_visit_id, source_type, source_reference,
+                    department, doctor_name, visit_date, laboratory_id,
+                    bill_number, bill_amount, admission_number, ward, bed
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ');
+            $stmt->execute([
+                $customerId,
+                $patientId,
+                $externalVisitId !== '' ? $externalVisitId : null,
+                $data['source_type']      ?? null,
+                $data['source_reference'] ?? null,
+                $data['department']       ?? null,
+                $data['doctor_name']      ?? null,
+                $visitDate,
+                $data['laboratory_id']    ?? null,
+                $data['bill_number']      ?? null,
+                $billAmount,
+                $data['admission_number'] ?? null,
+                $data['ward']             ?? null,
+                $data['bed']              ?? null,
+            ]);
+
+            return (int) $pdo->lastInsertId();
+        } catch (\Exception $e) {
+            AppLogger::error('system', 'Failed to insert visit record', ['error' => $e->getMessage()]);
+            return null;
+        }
+    }
+
+    /**
      * Save patient details, create associated contact and consent token,
      * and trigger a WhatsApp consent message via the AiSensy campaign API.
      *
@@ -107,39 +281,114 @@ class PatientController
         try {
             $pdo = Database::getConnection();
 
-            // Pre-insert duplicate checks
+            // ── Duplicate / existing-patient checks ──────────────────────────────
             $mobileRaw = trim((string) ($sanitized['mobile'] ?? ''));
             $mobileNorm = $this->normalizePhone($mobileRaw);
             $mobileNormNoPlus = $mobileNorm ? ltrim($mobileNorm, '+') : null;
             $externalPatientId = trim((string) ($sanitized['external_patient_id'] ?? ''));
 
-            // Check duplicate by mobile (raw + normalized variants)
+            // Try to find an existing patient by mobile (all variants)
+            $existingPatient = null;
             $stmtMobile = $pdo->prepare(
-                'SELECT id FROM patient_master WHERE customer_id = ? AND (mobile = ? OR mobile = ? OR mobile = ?) LIMIT 1'
+                'SELECT * FROM patient_master WHERE customer_id = ? AND (mobile = ? OR mobile = ? OR mobile = ?) LIMIT 1'
             );
             $stmtMobile->execute([$customerId, $mobileRaw, $mobileNorm, $mobileNormNoPlus]);
-            if ($stmtMobile->fetch()) {
-                AppLogger::warning($user, 'Duplicate mobile when saving patient', [
-                    'customer_id' => $customerId,
-                    'mobile' => $mobileRaw,
-                ]);
-                return ApiResponse::error($response, 'mobile number already exist', [], 200);
-            }
+            $existingPatient = $stmtMobile->fetch() ?: null;
 
-            // Check duplicate by external_patient_id (only when provided)
-            if ($externalPatientId !== '') {
+            // Fall back to external_patient_id lookup if mobile didn't match
+            if (!$existingPatient && $externalPatientId !== '') {
                 $stmtExt = $pdo->prepare(
-                    'SELECT id FROM patient_master WHERE customer_id = ? AND external_patient_id = ? LIMIT 1'
+                    'SELECT * FROM patient_master WHERE customer_id = ? AND external_patient_id = ? LIMIT 1'
                 );
                 $stmtExt->execute([$customerId, $externalPatientId]);
-                if ($stmtExt->fetch()) {
-                    AppLogger::warning($user, 'Duplicate external patient ID when saving patient', [
-                        'customer_id' => $customerId,
-                        'external_patient_id' => $externalPatientId,
-                    ]);
-                    return ApiResponse::error($response, 'Patient already registered', [], 200);
-                }
+                $existingPatient = $stmtExt->fetch() ?: null;
             }
+
+            if ($existingPatient) {
+                // Patient exists — check whether consent is still PENDING
+                $stmtConsent = $pdo->prepare(
+                    'SELECT * FROM patient_consents WHERE patient_id = ? AND consent_status = ? ORDER BY consent_id DESC LIMIT 1'
+                );
+                $stmtConsent->execute([$existingPatient['id'], 'PENDING']);
+                $pendingConsent = $stmtConsent->fetch();
+
+                if (!$pendingConsent) {
+                    // Consent already completed or not pending — nothing to resend
+                    AppLogger::warning($user, 'Patient exists with no pending consent', [
+                        'patient_id' => $existingPatient['id'],
+                    ]);
+                    return ApiResponse::error($response, 'mobile number already exist', [], 200);
+                }
+
+                // Consent is PENDING — generate a fresh token and resend AiSensy message
+                $rawToken  = bin2hex(random_bytes(32));
+                $tokenHash = hash('sha256', $rawToken);
+                $tokenLast4 = substr($rawToken, -4);
+                $expiresAt = (new \DateTime('+' . self::CONSENT_TOKEN_VALIDITY_DAYS . ' days'))->format('Y-m-d H:i:s');
+
+                $pdo->beginTransaction();
+
+                // Supersede any previously active tokens for this consent
+                $stmt = $pdo->prepare('UPDATE consent_tokens SET status = ? WHERE consent_id = ? AND status = ?');
+                $stmt->execute(['SUPERSEDED', $pendingConsent['consent_id'], 'ACTIVE']);
+
+                // Insert the new token
+                $stmt = $pdo->prepare('INSERT INTO consent_tokens (customer_id, consent_id, token_hash, token_last4, status, expires_at) VALUES (?, ?, ?, ?, ?, ?)');
+                $stmt->execute([$customerId, $pendingConsent['consent_id'], $tokenHash, $tokenLast4, 'ACTIVE', $expiresAt]);
+                $tokenId = (int) $pdo->lastInsertId();
+
+                $pdo->commit();
+
+                AppLogger::info($user, 'Resending consent message to existing patient', [
+                    'patient_id'  => $existingPatient['id'],
+                    'consent_id'  => $pendingConsent['consent_id'],
+                    'token_id'    => $tokenId,
+                ]);
+
+                // Call AiSensy for existing patient
+                $firstName = trim((string) ($existingPatient['first_name'] ?? $existingPatient['patient_name'] ?? 'User'));
+                $lastName  = trim((string) ($existingPatient['last_name'] ?? ''));
+                if ($firstName === '') $firstName = 'User';
+                $buttonUrl = 'https://ppc.penguinhealth.com/consent/accept?t=' . $rawToken;
+
+                $aisensyResponse = $this->callAiSensyApi(
+                    'HM Consent V1',
+                    $this->normalizePhone($existingPatient['mobile'] ?? null) ?? '',
+                    $firstName,
+                    $lastName,
+                    $buttonUrl
+                );
+                $aisensyPayload  = $aisensyResponse['_payload'] ?? [];
+                unset($aisensyResponse['_payload']);
+
+                // Save visit record and capture visit_id for message log
+                $visitId = $this->insertVisitRecord($pdo, $customerId, $existingPatient['id'], $sanitized);
+
+                $this->insertPatientMessage(
+                    $pdo,
+                    $customerId,
+                    $existingPatient['id'],
+                    $pendingConsent['consent_id'],
+                    'CONSENT',
+                    'HM Consent V1',
+                    $existingPatient['mobile'],
+                    'AISENSY',
+                    $aisensyPayload,
+                    $aisensyResponse,
+                    $visitId
+                );
+
+                return ApiResponse::success($response, [
+                    'patient_id'       => $existingPatient['id'],
+                    'consent_id'       => $pendingConsent['consent_id'],
+                    'consent_token_id' => $tokenId,
+                    'consent_token'    => $rawToken,
+                    'expires_at'       => $expiresAt,
+                    'visit_id'         => $visitId,
+                    'aisensy_response' => $aisensyResponse,
+                ], 'Consent message resent to existing patient');
+            }
+            // ── End existing-patient branch — fall through to new patient creation ──
 
             $pdo->beginTransaction();
 
@@ -214,76 +463,45 @@ class PatientController
             ]);
 
             // 4. Call AiSensy Campaign API to send WhatsApp message with the token link
-            $aisensyResponse = null;
-            try {
-                $aisensyEndpoint = 'https://backend.aisensy.com/campaign/t1/api/v2';
-
-                // Ensure destination starts with + and strip non-digits
-                // Normalize destination phone number
-                $destination = $this->normalizePhone($sanitized['mobile'] ?? null);
-                if ($destination === null) {
-                    AppLogger::warning($user, 'Invalid mobile provided for AiSensy', ['mobile' => $sanitized['mobile'] ?? null]);
-                    $destination = '';
-                }
-
-                $buttonUrl = 'https://ppc.penguinhealth.com/consent/accept?t=' . $rawToken;
-                // $buttonUrl = 'https://ppc.penguinhealthtech.com/#/login?t=' . $rawToken;
-
-                // Prepare template params ensuring they are strings and fallbacks are provided
-                $firstName = trim((string) ($sanitized['first_name'] ?? $sanitized['patient_name'] ?? ''));
-                $lastName = trim((string) ($sanitized['last_name'] ?? ''));
-                if ($firstName === '') {
-                    $firstName = 'User';
-                }
-
-                $aisensyPayload = [
-                    'campaignName' => 'HM Consent V1',
-                    'destination' => $destination,
-                    'userName' => $firstName,
-                    // AiSensy expects array of template params; provide first and last name (last may be empty string)
-                    'templateParams' => [$firstName, $lastName],
-                    'buttonUrlParam' => $buttonUrl,
-                    'apiKey' => $_ENV['AISENSY_API_KEY'] ?? null
-                ];
-
-                $ch = curl_init($aisensyEndpoint);
-                curl_setopt($ch, CURLOPT_POST, true);
-                curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-                curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
-                curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($aisensyPayload));
-                curl_setopt($ch, CURLOPT_TIMEOUT, 15);
-
-                // Set the API key if provided in the request
-                curl_setopt($ch, CURLOPT_HTTPHEADER, [
-                    'Content-Type: application/json',
-                    'Authorization: Bearer ' . $_ENV['AISENSY_API_KEY']
-                ]);
-
-                $aisensyResult = curl_exec($ch);
-                $aisensyErr = curl_error($ch);
-                curl_close($ch);
-
-                if ($aisensyResult === false) {
-                    AppLogger::error($user, 'AiSensy API call failed', ['error' => $aisensyErr, 'payload' => $aisensyPayload]);
-                    $aisensyResponse = ['error' => $aisensyErr];
-                } else {
-                    $aisensyData = json_decode($aisensyResult, true);
-                    AppLogger::info($user, 'AiSensy API response', ['response' => $aisensyData]);
-                    $aisensyResponse = $aisensyData;
-                }
-            } catch (\Exception $ex) {
-                AppLogger::error($user, 'Exception while calling AiSensy API', ['error' => $ex->getMessage()]);
-                $aisensyResponse = ['exception' => $ex->getMessage()];
+            $destination = $this->normalizePhone($sanitized['mobile'] ?? null) ?? '';
+            if ($destination === '') {
+                AppLogger::warning($user, 'Invalid mobile provided for AiSensy', ['mobile' => $sanitized['mobile'] ?? null]);
             }
+            $firstName = trim((string) ($sanitized['first_name'] ?? $sanitized['patient_name'] ?? ''));
+            $lastName  = trim((string) ($sanitized['last_name'] ?? ''));
+            if ($firstName === '') $firstName = 'User';
+            $buttonUrl = 'https://ppc.penguinhealth.com/consent/accept?t=' . $rawToken;
+
+            $aisensyResponse = $this->callAiSensyApi('HM Consent V1', $destination, $firstName, $lastName, $buttonUrl);
+            $aisensyPayload  = $aisensyResponse['_payload'] ?? [];
+            unset($aisensyResponse['_payload']);
 
             $pdo->commit();
 
+            // Save visit record and capture visit_id for message log
+            $visitId = $this->insertVisitRecord($pdo, $customerId, $patientId, $sanitized);
+
+            $this->insertPatientMessage(
+                $pdo,
+                $customerId,
+                $patientId,
+                $consentId,
+                'CONSENT',
+                'HM Consent V1',
+                $sanitized['mobile'],
+                'AISENSY',
+                $aisensyPayload,
+                $aisensyResponse,
+                $visitId
+            );
+
             return ApiResponse::success($response, [
-                'patient_id' => $patientId,
-                'consent_id' => $consentId,
+                'patient_id'       => $patientId,
+                'consent_id'       => $consentId,
                 'consent_token_id' => $tokenId,
-                'consent_token' => $rawToken,
-                'expires_at' => $expiresAt,
+                'consent_token'    => $rawToken,
+                'expires_at'       => $expiresAt,
+                'visit_id'         => $visitId,
                 'aisensy_response' => $aisensyResponse,
             ], 'Patient created successfully');
         } catch (\Exception $e) {
@@ -383,21 +601,20 @@ class PatientController
         }
     }
 
-    public function sendConsentMessage(Request $request, Response $response): Response
+    public function sendWhatsappMessage(Request $request, Response $response): Response
     {
         $body = (array) $request->getParsedBody();
         $sanitized = Validator::sanitizeString($body);
         $user = $sanitized['user'] ?? 'NA';
 
-        AppLogger::info($user, 'Send consent message requested', ['patient_id' => $sanitized['patient_id'] ?? null]);
+        AppLogger::info($user, 'Send WhatsApp message requested');
 
-        $required = ['patient_id'];
+        $required = ['campaign_name', 'mobile'];
         $missing = array_filter($required, function ($key) use ($sanitized) {
             return empty($sanitized[$key]);
         });
 
         if (!empty($missing)) {
-            AppLogger::warning($user, 'Send consent message validation failed', ['missing' => $missing]);
             return ApiResponse::error(
                 $response,
                 'Missing required fields: ' . implode(', ', $missing),
@@ -406,117 +623,43 @@ class PatientController
             );
         }
 
-        $patientId = Validator::sanitizeInt($sanitized['patient_id']);
-        if ($patientId === null) {
-            AppLogger::error($user, 'Invalid patient ID for consent message', ['patient_id' => $sanitized['patient_id']]);
-            return ApiResponse::error($response, 'Invalid patient ID', null, 400);
+        $campaignName = trim((string) $sanitized['campaign_name']);
+        $destination = $this->normalizePhone($sanitized['mobile'] ?? null) ?? '';
+        $firstName = trim((string) ($sanitized['first_name'] ?? 'User'));
+        $lastName = trim((string) ($sanitized['last_name'] ?? ''));
+        $buttonUrl = trim((string) ($sanitized['button_url'] ?? ''));
+
+        if ($destination === '') {
+            return ApiResponse::error($response, 'Invalid mobile', null, 400);
         }
 
-        try {
-            $pdo = Database::getConnection();
-
-            $stmt = $pdo->prepare('SELECT * FROM patient_master WHERE id = ?');
-            $stmt->execute([$patientId]);
-            $patient = $stmt->fetch();
-
-            if (!$patient) {
-                AppLogger::warning($user, 'Patient not found for consent message', ['patient_id' => $patientId]);
-                return ApiResponse::error($response, 'Patient not found', null, 404);
-            }
-
-            $stmt = $pdo->prepare('SELECT * FROM customer WHERE customer_id = ?');
-            $stmt->execute([$patient['customer_id']]);
-            $customer = $stmt->fetch();
-
-            if (!$customer) {
-                AppLogger::warning($user, 'Customer not found for consent message', ['customer_id' => $patient['customer_id']]);
-                return ApiResponse::error($response, 'Customer not found', null, 404);
-            }
-
-            // Find latest active consent token for this patient's consent record
-            $stmt = $pdo->prepare(
-                'SELECT ct.token_hash, ct.id, pc.consent_id FROM patient_consents pc
-                JOIN consent_tokens ct ON ct.consent_id = pc.consent_id
-                JOIN patient_master pm ON pm.id = pc.patient_id
-                WHERE pc.customer_id = ? AND pm.mobile = ? AND ct.status = ?
-                ORDER BY ct.created_at DESC LIMIT 1'
-            );
-            $stmt->execute([$patient['customer_id'], $patient['mobile'], 'ACTIVE']);
-            $tokenRow = $stmt->fetch();
-
-            if (!$tokenRow) {
-                AppLogger::warning($user, 'No active consent token found for patient', ['patient_id' => $patientId]);
-                return ApiResponse::error($response, 'No active consent token found for this patient', null, 404);
-            }
-
-            $endpoint = $customer['aisensy_api_endpoint'] ?? null;
-            $apiKey = $customer['aisensy_api_key'] ?? null;
-
-            if (empty($endpoint) || empty($apiKey)) {
-                AppLogger::error($user, 'Customer missing aisensy API configuration', ['customer_id' => $patient['customer_id']]);
-                return ApiResponse::error($response, 'WhatsApp messaging is not configured for this customer', null, 400);
-            }
-
-            $destination = $this->normalizePhone($patient['mobile'] ?? null) ?? $patient['mobile'];
-
-            $payload = [
-                'apiKey' => $apiKey,
-                'campaignName' => $customer['aisensy_campaign_name'],
-                'destination' => $destination,
-                'templateParams' => [$patient['patient_name']],
-            ];
-
-            $ch = curl_init($endpoint);
-            curl_setopt($ch, CURLOPT_POST, true);
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
-            curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
-            curl_setopt($ch, CURLOPT_TIMEOUT, 15);
-            $result = curl_exec($ch);
-            $curlError = curl_error($ch);
-            curl_close($ch);
-
-            if ($result === false) {
-                AppLogger::error($user, 'Failed to send consent message via aisensy', ['error' => $curlError]);
-
-                $stmt = $pdo->prepare('UPDATE patient_master SET last_error = ? WHERE id = ?');
-                $stmt->execute([$curlError, $patientId]);
-
-                return ApiResponse::error($response, 'Failed to send consent message', null, 502);
-            }
-
-            $resultData = json_decode($result, true);
-            $messageId = $resultData['messageId'] ?? $resultData['id'] ?? null;
-
-            $pdo->beginTransaction();
-
-            $stmt = $pdo->prepare('UPDATE patient_master SET consent_status = ?, consent_sent_at = NOW(), last_message_id = ?, last_error = NULL WHERE id = ?');
-            $stmt->execute(['sent', $messageId, $patientId]);
-
-            $stmt = $pdo->prepare('UPDATE patient_consents SET consent_status = ?, consent_granted_at = NOW() WHERE consent_id = ?');
-            $stmt->execute(['SENT', $tokenRow['consent_id']]);
-
-            $pdo->commit();
-
-            AppLogger::info($user, 'Consent message sent successfully', [
-                'patient_id' => $patientId,
-                'message_id' => $messageId
-            ]);
-
-            return ApiResponse::success($response, [
-                'patient_id' => $patientId,
-                'message_id' => $messageId
-            ], 'Consent message sent successfully');
-        } catch (\Exception $e) {
-            if (isset($pdo) && $pdo->inTransaction()) {
-                $pdo->rollBack();
-            }
-            AppLogger::error($user, 'Database error sending consent message', [
-                'patient_id' => $patientId,
-                'error' => $e->getMessage()
-            ]);
-            return ApiResponse::error($response, 'Failed to send consent message', null, 500);
+        if ($firstName === '') {
+            $firstName = 'User';
         }
+
+        $aisensyResponse = $this->callAiSensyApi(
+            $campaignName,
+            $destination,
+            $firstName,
+            $lastName,
+            $buttonUrl
+        );
+
+        $aisensyPayload = $aisensyResponse['_payload'] ?? [];
+        unset($aisensyResponse['_payload']);
+
+        AppLogger::info($user, 'Send WhatsApp message response', [
+            'campaign_name' => $campaignName,
+            'destination' => $destination,
+            'response' => $aisensyResponse,
+        ]);
+
+        return ApiResponse::success($response, [
+            'campaign_name' => $campaignName,
+            'destination' => $destination,
+            'request_payload' => $aisensyPayload,
+            'aisensy_response' => $aisensyResponse,
+        ], 'WhatsApp message sent');
     }
 
     // Import patients from CSV
@@ -664,6 +807,99 @@ class PatientController
         } catch (\Exception $e) {
             AppLogger::error($user, 'Database error during CSV import', ['error' => $e->getMessage()]);
             return ApiResponse::error($response, 'Failed to import CSV', null, 500);
+        }
+    }
+
+    /**
+     * Save a patient visit record.
+     *
+     * Required: customer_id, patient_id, visit_date
+     * Optional: external_visit_id, source_type, source_reference, department,
+     *           doctor_name, laboratory_id, bill_number, bill_amount,
+     *           admission_number, ward, bed
+     */
+    public function saveVisit(Request $request, Response $response): Response
+    {
+        $body      = (array) $request->getParsedBody();
+        $sanitized = Validator::sanitizeString($body);
+        $user      = $sanitized['user'] ?? 'NA';
+
+        AppLogger::info($user, 'New visit submission', [
+            'patient_id'  => $sanitized['patient_id']  ?? null,
+            'customer_id' => $sanitized['customer_id'] ?? null,
+        ]);
+
+        // Validate required fields
+        $required = ['customer_id', 'patient_id', 'visit_date'];
+        $missing  = array_filter($required, function ($k) use ($sanitized) { return empty($sanitized[$k]); });
+
+        if (!empty($missing)) {
+            AppLogger::warning($user, 'Visit save validation failed', ['missing' => $missing]);
+            return ApiResponse::error(
+                $response,
+                'Missing required fields: ' . implode(', ', $missing),
+                null,
+                400
+            );
+        }
+
+        $customerId = Validator::sanitizeInt($sanitized['customer_id']);
+        $patientId  = Validator::sanitizeInt($sanitized['patient_id']);
+
+        if ($customerId === null || $patientId === null) {
+            return ApiResponse::error($response, 'Invalid customer_id or patient_id', null, 400);
+        }
+
+        try {
+            $pdo = Database::getConnection();
+
+            // Verify patient belongs to customer
+            $stmt = $pdo->prepare('SELECT id FROM patient_master WHERE id = ? AND customer_id = ? LIMIT 1');
+            $stmt->execute([$patientId, $customerId]);
+            if (!$stmt->fetch()) {
+                AppLogger::warning($user, 'Patient not found for visit save', [
+                    'patient_id'  => $patientId,
+                    'customer_id' => $customerId,
+                ]);
+                return ApiResponse::error($response, 'Patient not found', null, 404);
+            }
+
+            // Duplicate check by external_visit_id (when provided)
+            $externalVisitId = trim((string) ($sanitized['external_visit_id'] ?? ''));
+            if ($externalVisitId !== '') {
+                $stmt = $pdo->prepare(
+                    'SELECT visit_id FROM patient_visits WHERE customer_id = ? AND external_visit_id = ? LIMIT 1'
+                );
+                $stmt->execute([$customerId, $externalVisitId]);
+                if ($stmt->fetch()) {
+                    AppLogger::warning($user, 'Duplicate external_visit_id', [
+                        'customer_id'       => $customerId,
+                        'external_visit_id' => $externalVisitId,
+                    ]);
+                    return ApiResponse::error($response, 'Visit already exists', [], 200);
+                }
+            }
+
+            $visitId = $this->insertVisitRecord($pdo, $customerId, $patientId, $sanitized);
+
+            if ($visitId === null) {
+                return ApiResponse::error($response, 'Failed to save visit', null, 500);
+            }
+
+            AppLogger::info($user, 'Visit saved successfully', [
+                'visit_id'   => $visitId,
+                'patient_id' => $patientId,
+            ]);
+
+            return ApiResponse::success($response, [
+                'visit_id'    => $visitId,
+                'patient_id'  => $patientId,
+                'customer_id' => $customerId,
+            ], 'Visit saved successfully');
+
+        } catch (\Exception $e) {
+            AppLogger::error($user, 'Database error saving visit', ['error' => $e->getMessage()]);
+            return ApiResponse::error($response, 'Failed to save visit', null, 500);
         }
     }
 

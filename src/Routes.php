@@ -52,11 +52,12 @@ return function (App $app): void {
     // Patient Routes
     $patientController = new PatientController();
     $app->post('/savePatient', [$patientController, 'savePatient']);
-    $app->post('/sendConsentMessage', [$patientController, 'sendConsentMessage']);
+    $app->post('/sendWhatsappMessage', [$patientController, 'sendWhatsappMessage']);
     //$app->get('/consentAgree', [$patientController, 'consentAgree']);
     // Friendly/RESTful alias for consent link handling
     $app->get('/consent/agree', [$patientController, 'consentAgree']);
     $app->post('/bulkImport', [$patientController, 'bulkImport']);
+    $app->post('/saveVisit', [$patientController, 'saveVisit']);
     
     // User Routes
     $userController = new UserController();
