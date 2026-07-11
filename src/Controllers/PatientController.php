@@ -175,39 +175,34 @@ class PatientController
                 'patient_name' => $sanitized['patient_name']
             ]);
             // exit();
-            // 2. Insert / Save in contact table
-            $stmt = $pdo->prepare('INSERT INTO contact (customer_id, external_patient_id, mobile_no, first_name, last_name, source_type, source_reference, consent_status, consent_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+            // 2. Insert / Save in patient_consents table
+            $stmt = $pdo->prepare('INSERT INTO patient_consents (customer_id, patient_id, consent_status, consent_source, purpose) VALUES (?, ?, ?, ?, ?)');
             $stmt->execute([
                 $customerId,
-                $sanitized['external_patient_id'] ?? (string) $patientId,
-                $sanitized['mobile'],
-                $sanitized['first_name'] ?? $sanitized['patient_name'],
-                $sanitized['last_name'] ?? null,
-                $sanitized['source_type'] ?? null,
-                $sanitized['source_reference'] ?? null,
+                $patientId,
                 'PENDING',
                 $sanitized['consent_source'] ?? null,
+                $sanitized['purpose'] ?? 'WHATSAPP_CONSENT',
             ]);
-            $contactId = (int) $pdo->lastInsertId();
+            $consentId = (int) $pdo->lastInsertId();
 
-            AppLogger::info($user, 'Contact created successfully', [
-                'contact_id' => $contactId,
+            AppLogger::info($user, 'Patient consent record created', [
+                'consent_id' => $consentId,
                 'patient_id' => $patientId
             ]);
 
-            // 3. Generate token against contact_id and insert in consent_token table
+            // 3. Generate token against consent_id and insert in consent_tokens table
             $rawToken = bin2hex(random_bytes(32));
             $tokenHash = hash('sha256', $rawToken);
             $tokenLast4 = substr($rawToken, -4);
             $expiresAt = (new \DateTime('+' . self::CONSENT_TOKEN_VALIDITY_DAYS . ' days'))->format('Y-m-d H:i:s');
 
-            $stmt = $pdo->prepare('INSERT INTO consent_tokens (customer_id, contact_id, token_hash, token_last4, purpose, status, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)');
+            $stmt = $pdo->prepare('INSERT INTO consent_tokens (customer_id, consent_id, token_hash, token_last4, status, expires_at) VALUES (?, ?, ?, ?, ?, ?)');
             $stmt->execute([
                 $customerId,
-                $contactId,
+                $consentId,
                 $tokenHash,
                 $tokenLast4,
-                $sanitized['purpose'] ?? 'WHATSAPP_CONSENT',
                 'ACTIVE',
                 $expiresAt,
             ]);
@@ -215,7 +210,7 @@ class PatientController
 
             AppLogger::info($user, 'Consent token generated successfully', [
                 'token_id' => $tokenId,
-                'contact_id' => $contactId
+                'consent_id' => $consentId
             ]);
 
             // 4. Call AiSensy Campaign API to send WhatsApp message with the token link
@@ -285,7 +280,7 @@ class PatientController
 
             return ApiResponse::success($response, [
                 'patient_id' => $patientId,
-                'contact_id' => $contactId,
+                'consent_id' => $consentId,
                 'consent_token_id' => $tokenId,
                 'consent_token' => $rawToken,
                 'expires_at' => $expiresAt,
@@ -347,19 +342,23 @@ class PatientController
             $stmt = $pdo->prepare('UPDATE consent_tokens SET status = ?, used_at = NOW() WHERE id = ?');
             $stmt->execute(['USED', $tokenRow['id']]);
 
-            // Update contact consent status
-            $stmt = $pdo->prepare('UPDATE contact SET consent_status = ?, consent_granted_at = NOW() WHERE contact_id = ?');
+            // Update patient consent status
+            $stmt = $pdo->prepare('UPDATE patient_consents SET consent_status = ?, consent_granted_at = NOW() WHERE consent_id = ?');
             $stmt->execute(['CONSENTED', $tokenRow['contact_id']]);
 
-            // Find matching patient via customer_id + mobile and update consent status
-            $stmt = $pdo->prepare('SELECT mobile_no FROM contact WHERE contact_id = ?');
+            // Find matching patient via consent record and update consent status
+            $stmt = $pdo->prepare(
+                'SELECT pm.mobile FROM patient_consents pc
+                JOIN patient_master pm ON pm.id = pc.patient_id
+                WHERE pc.consent_id = ?'
+            );
             $stmt->execute([$tokenRow['contact_id']]);
             $contact = $stmt->fetch();
 
             $affectedPatients = 0;
             if ($contact) {
                 $stmt = $pdo->prepare('UPDATE patient_master SET consent_status = ?, consent_response_at = NOW() WHERE customer_id = ? AND mobile = ?');
-                $stmt->execute(['subscribed', $tokenRow['customer_id'], $contact['mobile_no']]);
+                $stmt->execute(['subscribed', $tokenRow['customer_id'], $contact['mobile']]);
                 $affectedPatients = $stmt->rowCount();
             }
 
@@ -372,7 +371,7 @@ class PatientController
             ]);
 
             return ApiResponse::success($response, [
-                'contact_id' => $tokenRow['contact_id'],
+                'consent_id' => $tokenRow['contact_id'],
                 'patients_updated' => $affectedPatients
             ], 'Consent recorded successfully');
         } catch (\Exception $e) {
@@ -434,11 +433,14 @@ class PatientController
                 return ApiResponse::error($response, 'Customer not found', null, 404);
             }
 
-            // Find latest active consent token for this patient's contact
-            $stmt = $pdo->prepare('SELECT ct.token_hash, ct.id, c.contact_id FROM contact c
-                JOIN consent_tokens ct ON ct.contact_id = c.contact_id
-                WHERE c.customer_id = ? AND c.mobile_no = ? AND ct.status = ?
-                ORDER BY ct.created_at DESC LIMIT 1');
+            // Find latest active consent token for this patient's consent record
+            $stmt = $pdo->prepare(
+                'SELECT ct.token_hash, ct.id, pc.consent_id FROM patient_consents pc
+                JOIN consent_tokens ct ON ct.consent_id = pc.consent_id
+                JOIN patient_master pm ON pm.id = pc.patient_id
+                WHERE pc.customer_id = ? AND pm.mobile = ? AND ct.status = ?
+                ORDER BY ct.created_at DESC LIMIT 1'
+            );
             $stmt->execute([$patient['customer_id'], $patient['mobile'], 'ACTIVE']);
             $tokenRow = $stmt->fetch();
 
@@ -477,7 +479,7 @@ class PatientController
             if ($result === false) {
                 AppLogger::error($user, 'Failed to send consent message via aisensy', ['error' => $curlError]);
 
-                $stmt = $pdo->prepare('UPDATE patients SET last_error = ? WHERE id = ?');
+                $stmt = $pdo->prepare('UPDATE patient_master SET last_error = ? WHERE id = ?');
                 $stmt->execute([$curlError, $patientId]);
 
                 return ApiResponse::error($response, 'Failed to send consent message', null, 502);
@@ -491,8 +493,8 @@ class PatientController
             $stmt = $pdo->prepare('UPDATE patient_master SET consent_status = ?, consent_sent_at = NOW(), last_message_id = ?, last_error = NULL WHERE id = ?');
             $stmt->execute(['sent', $messageId, $patientId]);
 
-            $stmt = $pdo->prepare('UPDATE contact SET consent_status = ?, consent_granted_at = NOW() WHERE contact_id = ?');
-            $stmt->execute(['SENT', $tokenRow['contact_id']]);
+            $stmt = $pdo->prepare('UPDATE patient_consents SET consent_status = ?, consent_granted_at = NOW() WHERE consent_id = ?');
+            $stmt->execute(['SENT', $tokenRow['consent_id']]);
 
             $pdo->commit();
 
@@ -583,9 +585,9 @@ class PatientController
         try {
             $pdo = Database::getConnection();
 
-            $patientStmt = $pdo->prepare('INSERT INTO patients (customer_id, patient_name, mobile, consent_status) VALUES (?, ?, ?, ?)');
-            $contactStmt = $pdo->prepare('INSERT INTO contact (customer_id, external_patient_id, mobile_no, first_name, source_type, source_reference, cpatient_master atus) VALUES (?, ?, ?, ?, ?, ?, ?)');
-            $tokenStmt = $pdo->prepare('INSERT INTO consent_tokens (customer_id, contact_id, token_hash, token_last4, purpose, status, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)');
+            $patientStmt = $pdo->prepare('INSERT INTO patient_master (customer_id, patient_name, mobile, consent_status) VALUES (?, ?, ?, ?)');
+            $contactStmt = $pdo->prepare('INSERT INTO patient_consents (customer_id, patient_id, consent_status, purpose) VALUES (?, ?, ?, ?)');
+            $tokenStmt = $pdo->prepare('INSERT INTO consent_tokens (customer_id, consent_id, token_hash, token_last4, status, expires_at) VALUES (?, ?, ?, ?, ?, ?)');
 
             $inserted = 0;
 
@@ -615,14 +617,11 @@ class PatientController
 
                     $contactStmt->execute([
                         $customerId,
-                        (string) $patientId,
-                        trim($data['mobile']),
-                        trim($data['patient_name'] ?? ''),
-                        trim($data['source_type'] ?? ''),
-                        trim($data['source_reference'] ?? ''),
+                        $patientId,
                         'PENDING',
+                        'WHATSAPP_CONSENT',
                     ]);
-                    $contactId = (int) $pdo->lastInsertId();
+                    $consentId = (int) $pdo->lastInsertId();
 
                     $rawToken = bin2hex(random_bytes(32));
                     $tokenHash = hash('sha256', $rawToken);
@@ -631,10 +630,9 @@ class PatientController
 
                     $tokenStmt->execute([
                         $customerId,
-                        $contactId,
+                        $consentId,
                         $tokenHash,
                         $tokenLast4,
-                        'WHATSAPP_CONSENT',
                         'ACTIVE',
                         $expiresAt,
                     ]);
