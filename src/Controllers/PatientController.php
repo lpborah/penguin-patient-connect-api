@@ -122,29 +122,23 @@ class PatientController
     /**
      * Call the AiSensy Campaign API to send a WhatsApp message.
      * Returns the decoded response array, or an error/exception array on failure.
-     *
+     * @Param string $campaignName Name of the AiSensy campaign to triggerś
      * @param string $destination  Normalized E.164 phone number
-     * @param string $firstName    Patient first name (used as userName and first templateParam)
-     * @param string $lastName     Patient last name (second templateParam, may be empty)
-     * @param string $buttonUrl    Full consent URL to embed in the message button
-     * @return array               Decoded provider response
+     * @param array  $templateParams Template parameters for the message
+     * @return array Decoded provider response
      */
     private function callAiSensyApi(
         string $campaignName,
         string $destination,
-        string $firstName,
-        string $lastName,
-        string $buttonUrl
+        array $templateParams
+    
     ): array {
         $endpoint = 'https://backend.aisensy.com/campaign/t1/api/v2';
         $apiKey   = $_ENV['AISENSY_API_KEY'] ?? '';
-
         $payload = [
             'campaignName'   => $campaignName,
             'destination'    => $destination,
-            'userName'       => $firstName,
-            'templateParams' => [$firstName, $lastName],
-            'buttonUrlParam' => $buttonUrl,
+            'templateParams' => $templateParams,
             'apiKey'         => $apiKey,
         ];
 
@@ -349,14 +343,12 @@ class PatientController
                 $firstName = trim((string) ($existingPatient['first_name'] ?? $existingPatient['patient_name'] ?? 'User'));
                 $lastName  = trim((string) ($existingPatient['last_name'] ?? ''));
                 if ($firstName === '') $firstName = 'User';
-                $buttonUrl = 'https://ppc.penguinhealth.com/consent/accept?t=' . $rawToken;
 
+                $fullName = trim($firstName . ' ' . $lastName);
                 $aisensyResponse = $this->callAiSensyApi(
-                    'HM Consent V1',
-                    $this->normalizePhone($existingPatient['mobile'] ?? null) ?? '',
-                    $firstName,
-                    $lastName,
-                    $buttonUrl
+                    'HM Consent V1', // campaign name
+                    $this->normalizePhone($existingPatient['mobile'] ?? null) ?? '', // destination
+                    [$fullName, $rawToken] // template parameters for AiSensy message
                 );
                 $aisensyPayload  = $aisensyResponse['_payload'] ?? [];
                 unset($aisensyResponse['_payload']);

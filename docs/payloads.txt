@@ -1,8 +1,9 @@
-PPC API - Endpoint Payload & Response Reference
-==============================================
+PPC API - ENDPOINT PAYLOAD & RESPONSE REFERENCE
+=================================================================
 
-Response Envelope (common for all APIs)
----------------------------------------
+COMMON RESPONSE ENVELOPE
+------------------------
+
 Success:
 {
   "data": {},
@@ -17,38 +18,85 @@ Error:
   "status": "error"
 }
 
-=================================================================
 HEALTH ENDPOINTS
-=================================================================
+----------------
 
 GET /
-Query: none
-Response data: null
 
+Payload: none
+
+Response:
+{
+  "data": null,
+  "message": "API is up and running",
+  "status": "success"
+}
+
+=================================================================
 GET /health
-Query: none
-Response data: null
 
-=================================================================
+Payload: none
+
+Response:
+{
+  "data": null,
+  "message": "PPC API is up and running",
+  "status": "success"
+}
+
 CUSTOMER ENDPOINTS
+------------------
+
 =================================================================
-
 GET /getCustomers
-Query (optional):
+
+Payload (optional):
 {
   "user": "admin"
 }
-Response data: array of customer rows
 
+Response:
+{
+  "data": [
+    {
+      "customer_id": 123,
+      "customer_name": "ABC Hospital",
+      "customer_code": "ABC001",
+      "contact_person": "Rohit Sharma",
+      "mobile_no": "9876543210",
+      "email": "ops@abchospital.com",
+      "status": "ACTIVE"
+    }
+  ],
+  "message": "Customers retrieved successfully",
+  "status": "success"
+}
+
+=================================================================
 GET /getCustomersWithAMCSubscriptions
-Query (optional):
+
+Payload (optional):
 {
   "user": "admin"
 }
-Response data: array of customer + subscription rows (amc_required = 1)
 
+Response:
+{
+  "data": [
+    {
+      "customer_id": 123,
+      "customer_name": "ABC Hospital",
+      "amc_required": 1
+    }
+  ],
+  "message": "Customers with AMC subscriptions retrieved successfully",
+  "status": "success"
+}
+
+=================================================================
 POST /saveCustomer
-Payload (full):
+
+Payload:
 {
   "customer_name": "ABC Hospital",
   "customer_code": "ABC001",
@@ -66,13 +114,20 @@ Payload (full):
   "status": "ACTIVE",
   "user": "admin"
 }
-Success data:
+
+Response:
 {
-  "customer_id": 123
+  "data": {
+    "customer_id": 123
+  },
+  "message": "Customer created successfully",
+  "status": "success"
 }
 
+=================================================================
 POST /updateCustomer
-Payload (full):
+
+Payload:
 {
   "customer_id": 123,
   "customer_name": "ABC Hospital",
@@ -91,49 +146,82 @@ Payload (full):
   "status": "ACTIVE",
   "user": "admin"
 }
-Success data:
+
+Response:
 {
-  "affected": 1
+  "data": {
+    "affected": 1
+  },
+  "message": "Customer updated successfully",
+  "status": "success"
 }
 
+=================================================================
 POST /deleteCustomer
+
 Payload:
 {
   "customer_id": 123,
   "user": "admin"
 }
-Success data:
+
+Response:
 {
-  "affected": 1
+  "data": {
+    "affected": 1
+  },
+  "message": "Customer deleted successfully",
+  "status": "success"
 }
 
+=================================================================
 POST /importCustomers (multipart/form-data)
-Payload/form fields:
+
+Payload:
 {
   "file": "customers.csv"
 }
+
 CSV required columns:
-customer_name, customer_code, aisensy_campaign_name, aisensy_template_name,
-contact_person, mobile_no, email, address, city, pin, state, country, gst_no, status
-Success data:
+customer_name, customer_code, aisensy_campaign_name, aisensy_template_name, contact_person, mobile_no, email, address, city, pin, state, country, gst_no, status
+
+Response:
 {
-  "inserted": 25
+  "data": {
+    "inserted": 25
+  },
+  "message": "CSV uploaded successfully",
+  "status": "success"
 }
 
+=================================================================
 GET /getCustomerById
-Query:
+
+Payload:
 {
   "customer_id": 123,
   "user": "admin"
 }
-Response data: single customer row
 
-=================================================================
+Response:
+{
+  "data": {
+    "customer_id": 123,
+    "customer_name": "ABC Hospital",
+    "customer_code": "ABC001",
+    "status": "ACTIVE"
+  },
+  "message": "Customer retrieved successfully",
+  "status": "success"
+}
+
 PATIENT ENDPOINTS
-=================================================================
+-----------------
 
+=================================================================
 POST /savePatient
-Payload (full):
+
+Payload:
 {
   "customer_id": 123,
   "patient_name": "John Doe",
@@ -145,7 +233,6 @@ Payload (full):
   "mobile": "9876543210",
   "consent_source": "OPD",
   "purpose": "WHATSAPP_CONSENT",
-
   "visit_date": "2026-07-11",
   "external_visit_id": "EXT-V-5001",
   "source_type": "HIS",
@@ -158,56 +245,54 @@ Payload (full):
   "admission_number": "ADM-001",
   "ward": "ICU",
   "bed": "B12",
-
   "user": "admin"
 }
-Success data (new patient):
+
+Response (new patient):
 {
-  "patient_id": 42,
-  "consent_id": 18,
-  "consent_token_id": 97,
-  "consent_token": "<raw_token>",
-  "expires_at": "2026-07-18 10:00:00",
-  "visit_id": 300,
-  "aisensy_response": {
-    "submitted_message_id": "msg_123",
-    "...": "..."
-  }
+  "data": {
+    "patient_id": 42,
+    "consent_id": 18,
+    "consent_token_id": 97,
+    "consent_token": "<raw_token>",
+    "expires_at": "2026-07-18 10:00:00",
+    "visit_id": 300,
+    "aisensy_response": {
+      "submitted_message_id": "msg_123"
+    }
+  },
+  "message": "Patient created successfully",
+  "status": "success"
 }
-Success data (existing patient + pending consent):
+
+Response (existing patient + pending consent):
 {
-  "patient_id": 42,
-  "consent_id": 18,
-  "consent_token_id": 98,
-  "consent_token": "<raw_token>",
-  "expires_at": "2026-07-18 11:00:00",
-  "visit_id": 301,
-  "aisensy_response": {
-    "submitted_message_id": "msg_124",
-    "...": "..."
-  }
+  "data": {
+    "patient_id": 42,
+    "consent_id": 18,
+    "consent_token_id": 98,
+    "consent_token": "<raw_token>",
+    "expires_at": "2026-07-18 11:00:00",
+    "visit_id": 301,
+    "aisensy_response": {
+      "submitted_message_id": "msg_124"
+    }
+  },
+  "message": "Consent message resent to existing patient",
+  "status": "success"
 }
-Common duplicate/no-pending response:
+
+Response (existing patient without pending consent):
 {
   "data": [],
   "message": "mobile number already exist",
   "status": "error"
 }
 
-POST /sendConsentMessage
-Payload:
-{
-  "patient_id": 42,
-  "user": "admin"
-}
-Success data:
-{
-  "patient_id": 42,
-  "message_id": "msg_123"
-}
---------------------------------------------
+=================================================================
 POST /sendWhatsappMessage
-Payload (full):
+
+Payload:
 {
   "campaign_name": "HM Consent V1",
   "mobile": "9876543210",
@@ -216,50 +301,71 @@ Payload (full):
   "button_url": "https://ppc.penguinhealth.com/consent/accept?t=sample-token",
   "user": "lakshmi"
 }
-Success data:
+
+Response:
 {
-  "campaign_name": "HM Consent V1",
-  "destination": "+919876543210",
-  "request_payload": {
-    "campaignName": "HM Consent V1",
+  "data": {
+    "campaign_name": "HM Consent V1",
     "destination": "+919876543210",
-    "userName": "John",
-    "templateParams": ["John", "Doe"],
-    "buttonUrlParam": "https://ppc.penguinhealth.com/consent/accept?t=sample-token",
-    "apiKey": "***"
+    "request_payload": {
+      "campaignName": "HM Consent V1",
+      "destination": "+919876543210",
+      "userName": "John",
+      "templateParams": ["John", "Doe"],
+      "buttonUrlParam": "https://ppc.penguinhealth.com/consent/accept?t=sample-token",
+      "apiKey": "*"
+    },
+    "aisensy_response": {
+      "submitted_message_id": "msg_125"
+    }
   },
-  "aisensy_response": {
-    "submitted_message_id": "msg_125",
-    "...": "..."
-  }
+  "message": "WhatsApp message sent",
+  "status": "success"
 }
-----------------------------------------------
+
+=================================================================
 GET /consent/agree
-Query:
+
+Payload:
 {
   "t": "<raw_token>",
   "user": "lakshmi"
 }
-Success data:
+
+Response:
 {
-  "consent_id": 18,
-  "patients_updated": 1
+  "data": {
+    "consent_id": 18,
+    "patients_updated": 1
+  },
+  "message": "Consent recorded successfully",
+  "status": "success"
 }
-------------------------------------------------
+
+=================================================================
 POST /bulkImport (multipart/form-data)
-Payload/form fields:
+
+Payload:
 {
   "file": "patients.csv"
 }
+
 CSV required columns:
 customer_id, patient_name, mobile, source_type, source_reference
-Success data:
+
+Response:
 {
-  "inserted": 120
+  "data": {
+    "inserted": 120
+  },
+  "message": "CSV uploaded successfully",
+  "status": "success"
 }
-----------------------------------------------
+
+=================================================================
 POST /saveVisit
-Payload (full):
+
+Payload:
 {
   "customer_id": 123,
   "patient_id": 42,
@@ -277,26 +383,49 @@ Payload (full):
   "bed": "B12",
   "user": "admin"
 }
-Success data:
+
+Response:
 {
-  "visit_id": 300,
-  "patient_id": 42,
-  "customer_id": 123
+  "data": {
+    "visit_id": 300,
+    "patient_id": 42,
+    "customer_id": 123
+  },
+  "message": "Visit saved successfully",
+  "status": "success"
 }
 
-=================================================================
 USER ENDPOINTS
-=================================================================
+--------------
 
+=================================================================
 GET /getUsers
-Query (optional):
+
+Payload (optional):
 {
   "user": "admin"
 }
-Response data: array of users (without password)
 
+Response:
+{
+  "data": [
+    {
+      "user_id": 501,
+      "user_name": "jdoe",
+      "email": "jdoe@example.com",
+      "phone_number": "9876543210",
+      "role_id": 2,
+      "status": "active"
+    }
+  ],
+  "message": "Users retrieved successfully",
+  "status": "success"
+}
+
+=================================================================
 POST /saveUser
-Payload (full):
+
+Payload:
 {
   "user_name": "jdoe",
   "email": "jdoe@example.com",
@@ -305,13 +434,20 @@ Payload (full):
   "role_id": 2,
   "user": "admin"
 }
-Success data:
+
+Response:
 {
-  "user_id": 501
+  "data": {
+    "user_id": 501
+  },
+  "message": "User created successfully",
+  "status": "success"
 }
 
+=================================================================
 POST /updateUser
-Payload (full):
+
+Payload:
 {
   "user_id": 501,
   "user_name": "jdoe",
@@ -321,65 +457,107 @@ Payload (full):
   "role_id": 2,
   "user": "admin"
 }
-Success data:
+
+Response:
 {
-  "affected": 1
+  "data": {
+    "affected": 1
+  },
+  "message": "User updated successfully",
+  "status": "success"
 }
 
+=================================================================
 POST /deleteUser
+
 Payload:
 {
   "user_id": 501,
   "user": "admin"
 }
-Success data:
+
+Response:
 {
-  "affected": 1
+  "data": {
+    "affected": 1
+  },
+  "message": "User deleted successfully",
+  "status": "success"
 }
 
+=================================================================
 POST /restoreDeletedUser
+
 Payload:
 {
   "user_id": 501,
   "user": "admin"
 }
-Success data:
+
+Response:
 {
-  "affected": 1
+  "data": {
+    "affected": 1
+  },
+  "message": "User deleted successfully",
+  "status": "success"
 }
 
+Note: the source document lists this response message as "User deleted successfully" for both /deleteUser and /restoreDeletedUser. This looks like a possible copy-paste error in the original source — you may want to confirm whether /restoreDeletedUser should return "User restored successfully" instead.
+
+=================================================================
 GET /getRoles
-Query (optional):
+
+Payload (optional):
 {
   "user": "admin"
 }
-Response data: array of roles
 
-=================================================================
+Response:
+{
+  "data": [
+    {
+      "role_id": 2,
+      "role_name": "Admin"
+    }
+  ],
+  "message": "Roles retrieved successfully",
+  "status": "success"
+}
+
 AUTH ENDPOINTS
-=================================================================
+--------------
 
+=================================================================
 POST /login
+
 Payload:
 {
   "username": "jdoe@example.com",
   "password": "Strong@123"
 }
-Success data:
+
+Response:
 {
-  "user": {
-    "user_id": 501,
-    "user_name": "jdoe",
-    "email": "jdoe@example.com",
-    "phone_number": "9876543210",
-    "role_id": 2,
-    "status": "active"
+  "data": {
+    "user": {
+      "user_id": 501,
+      "user_name": "jdoe",
+      "email": "jdoe@example.com",
+      "phone_number": "9876543210",
+      "role_id": 2,
+      "status": "active"
+    },
+    "token": "<jwt_token>",
+    "expires_in": 3600
   },
-  "token": "<jwt_token>",
-  "expires_in": 3600
+  "message": "Login successful",
+  "status": "success"
 }
 
+=================================================================
 POST /updatePassword
+
 Payload:
 {
   "username": "jdoe@example.com",
@@ -387,22 +565,33 @@ Payload:
   "new_password": "NewPass@123",
   "user": "jdoe@example.com"
 }
-Success data:
-[]
 
+Response:
+{
+  "data": [],
+  "message": "Password updated successfully",
+  "status": "success"
+}
+
+=================================================================
 POST /logout
+
 Payload:
 {
   "username": "jdoe@example.com",
   "user": "jdoe@example.com"
 }
-Success data:
-[]
 
-=================================================================
+Response:
+{
+  "data": [],
+  "message": "Logout successful",
+  "status": "success"
+}
+
 NOTES
-=================================================================
-1) Base URL depends on deployment (example: http://localhost/api)
-2) All responses follow the same envelope: data, message, status
-3) Some legacy endpoints return HTTP 200 even for validation/auth errors by design
+-----
 
+1. Base URL depends on deployment (example: http://localhost/api)
+2. All responses follow the same envelope: data, message, status
+3. Some legacy endpoints return HTTP 200 even for validation/auth errors by design
