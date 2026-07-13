@@ -90,8 +90,8 @@ class UserController
 
             $stmt = $pdo->prepare(
                 'INSERT INTO users 
-                (user_name, email, phone_number, password, role_id, status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, NOW())'
+                (user_name, email, phone_number, password, role_id, status, user, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, NOW())'
             );
 
             $stmt->execute([
@@ -100,7 +100,8 @@ class UserController
                 $sanitized['phone_number'],
                 $passwordHash,
                 $sanitized['role_id'],
-                1
+                1,
+                $user
             ]);
 
             $user_id = (int) $pdo->lastInsertId();
@@ -160,7 +161,9 @@ class UserController
                     email = ?,
                     phone_number = ?,
                     status = ?,
-                    role_id = ?
+                    role_id = ?,
+                    user = ?,
+                    updated_at = NOW()
                  WHERE user_id = ?'
             );
 
@@ -170,6 +173,7 @@ class UserController
                 $sanitized['phone_number'],
                 $sanitized['status'],
                 $sanitized['role_id'],
+                $user,
                 $user_id
             ]);
 
@@ -221,8 +225,8 @@ class UserController
 
         try {
             $pdo = Database::getConnection();
-            $stmt = $pdo->prepare("UPDATE users SET status = 'inactive' WHERE user_id = ?");
-            $stmt->execute([$user_id]);
+            $stmt = $pdo->prepare("UPDATE users SET status = 'inactive', user = ? WHERE user_id = ?");
+            $stmt->execute([$user, $user_id]);
 
             $affected = $stmt->rowCount();
             AppLogger::info($user, 'User soft deleted', ['user_id' => $user_id]);

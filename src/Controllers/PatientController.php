@@ -127,9 +127,66 @@ class PatientController
      * @param array  $templateParams Template parameters for the message
      * @return array Decoded provider response
      */
-    private function callAiSensyApi(
+
+    // Generic method to call generic AiSensy campaign APIs
+    private function callAiSensyCampaignApi(
         string $campaignName,
         string $destination,
+        array $templateParams,
+        string $campaignEndpoint
+    
+    ): array {
+        $endpoint = $campaignEndpoint;
+        $apiKey   = $_ENV['AISENSY_API_KEY'] ?? '';
+        $payload = [
+            'campaignName'   => $campaignName,
+            'destination'    => $destination,
+            'templateParams' => $templateParams,
+            'apiKey'         => $apiKey,
+        ];
+        
+        // Log the payload for debugging
+        AppLogger::info('system', 'AiSensy API request payload', [
+            'campaignName' => $campaignName,
+            'destination' => $destination,
+            'templateParams' => $templateParams,
+        ]);
+
+        try {
+            $ch = curl_init($endpoint);
+            curl_setopt($ch, CURLOPT_POST, true);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+            curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
+            curl_setopt($ch, CURLOPT_HTTPHEADER, [
+                'Content-Type: application/json',
+                'Authorization: Bearer ' . $apiKey,
+            ]);
+
+            $result   = curl_exec($ch);
+            $curlErr  = curl_error($ch);
+            curl_close($ch);
+
+            if ($result === false) {
+                AppLogger::error('system', 'AiSensy cURL error', ['error' => $curlErr, 'destination' => $destination]);
+                return ['_payload' => $payload, 'error' => $curlErr];
+            }
+
+            $decoded = json_decode($result, true) ?? [];
+            $decoded['_payload'] = $payload;   // carry payload for message logging
+            AppLogger::info('system', 'AiSensy API response', ['response' => $decoded]);
+            return $decoded;
+
+        } catch (\Exception $ex) {
+            AppLogger::error('system', 'AiSensy exception', ['error' => $ex->getMessage()]);
+            return ['_payload' => $payload, 'exception' => $ex->getMessage()];
+        }
+    }
+
+    private function callAiSensyConsentCampaignApi(
+        string $campaignName,
+        string $destination,
+        string $userName,
         array $templateParams
     
     ): array {
@@ -138,9 +195,17 @@ class PatientController
         $payload = [
             'campaignName'   => $campaignName,
             'destination'    => $destination,
+            'userName'       => $userName,
             'templateParams' => $templateParams,
             'apiKey'         => $apiKey,
         ];
+        
+        // Log the payload for debugging
+        AppLogger::info('system', 'AiSensy API request payload', [
+            'campaignName' => $campaignName,
+            'destination' => $destination,
+            'templateParams' => $templateParams,
+        ]);
 
         try {
             $ch = curl_init($endpoint);
@@ -240,16 +305,22 @@ class PatientController
         $body = (array) $request->getParsedBody();
         $sanitized = Validator::sanitizeString($body);
         $user = $sanitized['user'] ?? 'NA';
-
+        $campaignName = $sanitized['campaign_name'] ?? 'HM Consent V2';
+        // $campaignUserName = $sanitized['campaign_user_name'] ?? 'User';
+        // $campaignEndpoint = $sanitized['campaign_endpoint'] ?? 'https://backend.aisensy.com/campaign/t1/api/v2';
+        // $campaignTemplateParams = $sanitized['campaign_template_params'] ?? [];
         AppLogger::info($user, 'New patient submission', [
-            'patient_name' => $sanitized['patient_name'] ?? null,
-            'customer_id' => $sanitized['customer_id'] ?? null
+            'first_name' => $sanitized['first_name'] ?? null,
+            'last_name' => $sanitized['last_name'] ?? null,
+            'customer_id' => $sanitized['customer_id'] ?? null,
+            'campaign_name' => $campaignName
         ]);
 
         // Validate required fields
         $required = [
             'customer_id',
-            'patient_name',
+            'first_name',
+            'last_name',
             'mobile'
         ];
         $missing = array_filter($required, function ($key) use ($sanitized) {
@@ -267,6 +338,10 @@ class PatientController
         }
 
         $customerId = Validator::sanitizeInt($sanitized['customer_id']);
+        $firstName = trim((string) ($sanitized['first_name'] ?? 'User'));
+        $lastName  = trim((string) ($sanitized['last_name'] ?? 'User'));
+        $fullName = $firstName . ' ' . $lastName;
+
         if ($customerId === null) {
             AppLogger::error($user, 'Invalid customer ID for patient save', ['customer_id' => $sanitized['customer_id']]);
             return ApiResponse::error($response, 'Invalid customer ID', null, 400);
@@ -311,7 +386,7 @@ class PatientController
                     AppLogger::warning($user, 'Patient exists with no pending consent', [
                         'patient_id' => $existingPatient['id'],
                     ]);
-                    return ApiResponse::error($response, 'mobile number already exist', [], 200);
+                    return ApiResponse::error($response, 'mobile number already exist', [], 400);
                 }
 
                 // Consent is PENDING — generate a fresh token and resend AiSensy message
@@ -340,15 +415,11 @@ class PatientController
                 ]);
 
                 // Call AiSensy for existing patient
-                $firstName = trim((string) ($existingPatient['first_name'] ?? $existingPatient['patient_name'] ?? 'User'));
-                $lastName  = trim((string) ($existingPatient['last_name'] ?? ''));
-                if ($firstName === '') $firstName = 'User';
-
-                $fullName = trim($firstName . ' ' . $lastName);
-                $aisensyResponse = $this->callAiSensyApi(
-                    'HM Consent V1', // campaign name
-                    $this->normalizePhone($existingPatient['mobile'] ?? null) ?? '', // destination
-                    [$fullName, $rawToken] // template parameters for AiSensy message
+                $aisensyResponse = $this->callAiSensyConsentCampaignApi(
+                    $campaignName,
+                    $this->normalizePhone($existingPatient['mobile'] ?? null) ?? '',
+                    $fullName,
+                    [$fullName, $rawToken],
                 );
                 $aisensyPayload  = $aisensyResponse['_payload'] ?? [];
                 unset($aisensyResponse['_payload']);
@@ -362,7 +433,7 @@ class PatientController
                     $existingPatient['id'],
                     $pendingConsent['consent_id'],
                     'CONSENT',
-                    'HM Consent V1',
+                    $campaignName,
                     $existingPatient['mobile'],
                     'AISENSY',
                     $aisensyPayload,
@@ -389,19 +460,17 @@ class PatientController
                 INSERT INTO patient_master (
                     customer_id,
                     external_patient_id,
-                    patient_name,
                     first_name,
                     last_name,
                     age,
                     sex,
                     mobile
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
             ');
 
             $stmt->execute([
                 $customerId,
                 $sanitized['external_patient_id'] ?? null,
-                $sanitized['patient_name'],
                 $sanitized['first_name'] ?? null,
                 $sanitized['last_name'] ?? null,
                 $sanitized['age'] ?? null,
@@ -413,7 +482,8 @@ class PatientController
 
             AppLogger::info($user, 'Patient created successfully', [
                 'patient_id' => $patientId,
-                'patient_name' => $sanitized['patient_name']
+                'first_name' => $sanitized['first_name'] ?? null,
+                'last_name' => $sanitized['last_name'] ?? null
             ]);
             // exit();
             // 2. Insert / Save in patient_consents table
@@ -459,12 +529,13 @@ class PatientController
             if ($destination === '') {
                 AppLogger::warning($user, 'Invalid mobile provided for AiSensy', ['mobile' => $sanitized['mobile'] ?? null]);
             }
-            $firstName = trim((string) ($sanitized['first_name'] ?? $sanitized['patient_name'] ?? ''));
-            $lastName  = trim((string) ($sanitized['last_name'] ?? ''));
-            if ($firstName === '') $firstName = 'User';
-            $buttonUrl = 'https://ppc.penguinhealth.com/consent/accept?t=' . $rawToken;
 
-            $aisensyResponse = $this->callAiSensyApi('HM Consent V1', $destination, $firstName, $lastName, $buttonUrl);
+            $aisensyResponse = $this->callAiSensyConsentCampaignApi(
+                $campaignName,
+                $destination,
+                $firstName,
+                [$fullName, $rawToken]
+            );
             $aisensyPayload  = $aisensyResponse['_payload'] ?? [];
             unset($aisensyResponse['_payload']);
 
@@ -479,7 +550,7 @@ class PatientController
                 $patientId,
                 $consentId,
                 'CONSENT',
-                'HM Consent V1',
+                $campaignName,
                 $sanitized['mobile'],
                 'AISENSY',
                 $aisensyPayload,
@@ -601,9 +672,9 @@ class PatientController
 
         AppLogger::info($user, 'Send WhatsApp message requested');
 
-        $required = ['campaign_name', 'mobile'];
+        $required = ['campaign_name', 'mobile', 'campaign_template_params', 'campaign_endpoint'];
         $missing = array_filter($required, function ($key) use ($sanitized) {
-            return empty($sanitized[$key]);
+            return empty($sanitized[$key]); 
         });
 
         if (!empty($missing)) {
@@ -611,30 +682,24 @@ class PatientController
                 $response,
                 'Missing required fields: ' . implode(', ', $missing),
                 null,
-                400
+                200
             );
         }
 
         $campaignName = trim((string) $sanitized['campaign_name']);
         $destination = $this->normalizePhone($sanitized['mobile'] ?? null) ?? '';
-        $firstName = trim((string) ($sanitized['first_name'] ?? 'User'));
-        $lastName = trim((string) ($sanitized['last_name'] ?? ''));
-        $buttonUrl = trim((string) ($sanitized['button_url'] ?? ''));
+        $campaignEndpoint = $sanitized['campaign_endpoint'] ?? '';
+        $templateParams = $sanitized['campaign_template_params'] ?? [];
 
         if ($destination === '') {
-            return ApiResponse::error($response, 'Invalid mobile', null, 400);
+            return ApiResponse::error($response, 'Invalid mobile number', null, 400);
         }
 
-        if ($firstName === '') {
-            $firstName = 'User';
-        }
-
-        $aisensyResponse = $this->callAiSensyApi(
+        $aisensyResponse = $this->callAiSensyCampaignApi(
             $campaignName,
             $destination,
-            $firstName,
-            $lastName,
-            $buttonUrl
+            $templateParams,
+            $campaignEndpoint
         );
 
         $aisensyPayload = $aisensyResponse['_payload'] ?? [];
@@ -649,7 +714,6 @@ class PatientController
         return ApiResponse::success($response, [
             'campaign_name' => $campaignName,
             'destination' => $destination,
-            'request_payload' => $aisensyPayload,
             'aisensy_response' => $aisensyResponse,
         ], 'WhatsApp message sent');
     }
@@ -699,7 +763,8 @@ class PatientController
         // Example expected headers
         $requiredHeaders = [
             'customer_id',
-            'patient_name',
+            'first_name',
+            'last_name',
             'mobile',
             'source_type',
             'source_reference'
@@ -720,7 +785,7 @@ class PatientController
         try {
             $pdo = Database::getConnection();
 
-            $patientStmt = $pdo->prepare('INSERT INTO patient_master (customer_id, patient_name, mobile, consent_status) VALUES (?, ?, ?, ?)');
+            $patientStmt = $pdo->prepare('INSERT INTO patient_master (customer_id, first_name, last_name, mobile, consent_status) VALUES (?, ?, ?, ?, ?)');
             $contactStmt = $pdo->prepare('INSERT INTO patient_consents (customer_id, patient_id, consent_status, purpose) VALUES (?, ?, ?, ?)');
             $tokenStmt = $pdo->prepare('INSERT INTO consent_tokens (customer_id, consent_id, token_hash, token_last4, status, expires_at) VALUES (?, ?, ?, ?, ?, ?)');
 
@@ -744,7 +809,8 @@ class PatientController
 
                     $patientStmt->execute([
                         $customerId,
-                        trim($data['patient_name'] ?? ''),
+                        trim($data['first_name'] ?? ''),
+                        trim($data['last_name'] ?? ''),
                         trim($data['mobile']),
                         'pending',
                     ]);

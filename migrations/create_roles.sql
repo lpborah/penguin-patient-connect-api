@@ -1,0 +1,12 @@
+CREATE TABLE roles (
+    role_id INT(11) NOT NULL AUTO_INCREMENT,
+    role_name VARCHAR(50) NOT NULL,
+    description TEXT DEFAULT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (role_id),
+    UNIQUE KEY uk_role_name (role_name)
+) ENGINE=InnoDB
+DEFAULT CHARSET=utf8mb4
+COLLATE=utf8mb4_general_ci;

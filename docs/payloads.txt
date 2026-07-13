@@ -245,7 +245,7 @@ Payload:
   "admission_number": "ADM-001",
   "ward": "ICU",
   "bed": "B12",
-  "user": "admin"
+  "user": "logged-in-user"
 }
 
 Response (new patient):
@@ -295,11 +295,9 @@ POST /sendWhatsappMessage
 Payload:
 {
   "campaign_name": "HM Consent V1",
-  "mobile": "9876543210",
-  "first_name": "John",
-  "last_name": "Doe",
-  "button_url": "https://ppc.penguinhealth.com/consent/accept?t=sample-token",
-  "user": "lakshmi"
+  "mobile": "+919876543210",
+  "templateParams" : ['param1', 'param2'...],
+  "user": "logged-in-user"
 }
 
 Response:
@@ -310,9 +308,7 @@ Response:
     "request_payload": {
       "campaignName": "HM Consent V1",
       "destination": "+919876543210",
-      "userName": "John",
-      "templateParams": ["John", "Doe"],
-      "buttonUrlParam": "https://ppc.penguinhealth.com/consent/accept?t=sample-token",
+      "templateParams": ['param1', 'param2'...],
       "apiKey": "*"
     },
     "aisensy_response": {
@@ -329,7 +325,6 @@ GET /consent/agree
 Payload:
 {
   "t": "<raw_token>",
-  "user": "lakshmi"
 }
 
 Response:
@@ -381,7 +376,7 @@ Payload:
   "admission_number": "ADM-001",
   "ward": "ICU",
   "bed": "B12",
-  "user": "admin"
+  "user": "logged-in-user"
 }
 
 Response:
